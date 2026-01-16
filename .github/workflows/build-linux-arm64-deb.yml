@@ -41,13 +41,10 @@ jobs:
         with:
           targets: aarch64-unknown-linux-gnu
 
-      - name: Install cross-compilation dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu \
-            libc6-dev-arm64-cross \
             qemu-user-static \
             binfmt-support \
             dpkg \
@@ -55,8 +52,7 @@ jobs:
             dpkg-dev \
             protobuf-compiler \
             build-essential \
-            pkg-config \
-            libssl-dev
+            pkg-config
 
       - name: Install cross
         run: cargo install cross --git https://github.com/cross-rs/cross
@@ -69,18 +65,18 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: linux-arm64
+          key: linux-arm64-cross
 
-      - name: Build goosed binary for ARM64
+      - name: Build goosed binary for ARM64 using cross
         env:
           CROSS_NO_WARNINGS: 0
           RUST_BACKTRACE: 1
-          CC: aarch64-linux-gnu-gcc
-          CXX: aarch64-linux-gnu-g++
         run: |
           export TARGET="aarch64-unknown-linux-gnu"
           rustup target add "${TARGET}"
-          echo "Building goosed for ${TARGET}..."
+          echo "Building goosed for ${TARGET} using cross..."
+
+          # Use cross which handles cross-compilation via Docker
           cross build --release --target ${TARGET} -p goose-server
 
           echo "Build completed. Checking binary..."
@@ -172,7 +168,7 @@ jobs:
             - Debian-based distribution (Ubuntu, Debian, etc.)
 
             ---
-            Built with GitHub Actions 🚀
+            Built with GitHub Actions
           artifacts: ${{ steps.deb_path.outputs.deb_file }}
           token: ${{ secrets.GITHUB_TOKEN }}
           prerelease: ${{ github.event.inputs.prerelease }}
