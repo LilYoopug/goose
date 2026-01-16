@@ -1,0 +1,187 @@
+# Build and Release Linux ARM64 .deb package
+# This workflow builds the Goose desktop app for Linux ARM64 and creates a GitHub release
+# Trigger: Manual workflow dispatch only
+
+name: Build & Release Linux ARM64 .deb
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag for the release (e.g., 1.0.0)'
+        required: true
+        default: '1.0.0'
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build Linux ARM64 .deb & Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            qemu-user-static \
+            binfmt-support \
+            dpkg \
+            fakeroot \
+            dpkg-dev \
+            protobuf-compiler \
+            build-essential \
+            pkg-config \
+            libssl-dev
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Update version in Cargo.toml
+        run: |
+          sed -i.bak 's/^version = ".*"/version = "${{ github.event.inputs.version }}"/' Cargo.toml
+          rm -f Cargo.toml.bak
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-arm64
+
+      - name: Build goosed binary for ARM64
+        env:
+          CROSS_NO_WARNINGS: 0
+          RUST_BACKTRACE: 1
+          CC: aarch64-linux-gnu-gcc
+          CXX: aarch64-linux-gnu-g++
+        run: |
+          export TARGET="aarch64-unknown-linux-gnu"
+          rustup target add "${TARGET}"
+          echo "Building goosed for ${TARGET}..."
+          cross build --release --target ${TARGET} -p goose-server
+
+          echo "Build completed. Checking binary..."
+          file target/${TARGET}/release/goosed
+          ls -la target/${TARGET}/release/goosed
+
+      - name: Update version in package.json
+        run: |
+          cd ui/desktop
+          npm version ${{ github.event.inputs.version }} --no-git-tag-version --allow-same-version
+
+      - name: Copy goosed binary to Electron folder
+        run: |
+          export TARGET="aarch64-unknown-linux-gnu"
+          mkdir -p ui/desktop/src/bin
+          cp target/${TARGET}/release/goosed ui/desktop/src/bin/
+          chmod +x ui/desktop/src/bin/goosed
+          echo "Binary copied:"
+          ls -la ui/desktop/src/bin/
+          file ui/desktop/src/bin/goosed
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ui/desktop/node_modules
+            ~/.npm
+          key: linux-arm64-npm-${{ runner.os }}-${{ hashFiles('ui/desktop/package-lock.json') }}
+          restore-keys: |
+            linux-arm64-npm-${{ runner.os }}-
+
+      - name: Install npm dependencies
+        run: |
+          cd ui/desktop
+          npm install
+
+      - name: Build Linux ARM64 .deb package
+        env:
+          npm_config_arch: arm64
+          npm_config_target_arch: arm64
+        run: |
+          cd ui/desktop
+          echo "Building Linux ARM64 .deb package..."
+          npm run make -- --platform=linux --arch=arm64 --targets=@electron-forge/maker-deb
+
+          echo "Build completed. Checking output..."
+          find out/ -name "*.deb" -type f
+
+      - name: List generated files
+        run: |
+          echo "=== All files in out/ directory ==="
+          find ui/desktop/out/ -type f | head -30
+          echo ""
+          echo "=== .deb package files ==="
+          find ui/desktop/out/ -name "*.deb" -type f
+          echo ""
+          echo "=== File sizes ==="
+          find ui/desktop/out/ -name "*.deb" -exec ls -lh {} \;
+
+      - name: Get .deb file path
+        id: deb_path
+        run: |
+          DEB_FILE=$(find ui/desktop/out/ -name "*.deb" -type f | head -1)
+          echo "deb_file=${DEB_FILE}" >> $GITHUB_OUTPUT
+          DEB_NAME=$(basename "${DEB_FILE}")
+          echo "deb_name=${DEB_NAME}" >> $GITHUB_OUTPUT
+          echo "Found .deb file: ${DEB_FILE}"
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v${{ github.event.inputs.version }}-linux-arm64
+          name: Goose Linux ARM64 v${{ github.event.inputs.version }}
+          body: |
+            ## Goose Desktop - Linux ARM64 Release
+
+            **Version:** ${{ github.event.inputs.version }}
+            **Architecture:** ARM64 (aarch64)
+            **Package Format:** .deb (Debian/Ubuntu)
+
+            ### Installation
+            ```bash
+            sudo dpkg -i ${{ steps.deb_path.outputs.deb_name }}
+            sudo apt-get install -f  # Install dependencies if needed
+            ```
+
+            ### System Requirements
+            - Linux ARM64 system (e.g., Raspberry Pi 4/5, ARM servers, Apple Silicon with Linux)
+            - Debian-based distribution (Ubuntu, Debian, etc.)
+
+            ---
+            Built with GitHub Actions 🚀
+          artifacts: ${{ steps.deb_path.outputs.deb_file }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          prerelease: ${{ github.event.inputs.prerelease }}
+          allowUpdates: true
+          omitBodyDuringUpdate: false
+
+      - name: Upload .deb as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Goose-linux-arm64-deb
+          path: ui/desktop/out/make/deb/arm64/*.deb
+          if-no-files-found: error
